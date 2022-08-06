@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"log"
+	"regexp"
 	"sort"
+	"strings"
 )
 
 type Record = map[string]any
@@ -58,6 +60,18 @@ func GetNodeList() []string {
 	sort.Strings(nodeNames)
 
 	return nodeNames
+}
+func GetFilteredNodeList(args []string) []string {
+	result := make([]string, 0, 99)
+	pattern := strings.Join(args, "|")
+	re := regexp.MustCompile(pattern)
+	nodeList := GetNodeList()
+	for _, node := range nodeList {
+		if re.Match([]byte(node)) {
+			result = append(result, node)
+		}
+	}
+	return result
 }
 
 type Mode string

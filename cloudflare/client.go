@@ -1,107 +1,160 @@
-package download
+package cloudflare
 
 import (
+	"bytes"
 	"context"
-	"net"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"math/rand"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
-	"sync/atomic"
 	"time"
 )
 
-type Client struct {
-	proxy   string
-	timeout time.Duration
+type HTTPClient struct {
+	*http.Client
 }
 
-func New(proxy string, timeout time.Duration) *Client {
-	return &Client{proxy: proxy, timeout: timeout}
-}
-
-type Result struct {
-	BeginAt         time.Time
-	ConnectDuration time.Duration
-	TotalDuration   time.Duration
-
-	Length int64
-
-	BS float64
-
-	IP      string
-	Country string
-	City    string
-	Lat     string
-	Lng     string
-
-	Name string
-	Type string
-
-	status int
-	header http.Header
-}
-
-func Do(proxy, url string, timeout time.Duration) (*Result, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
+func NewHTTPClient(proxy string) *HTTPClient {
+	p, _ := url.Parse(proxy)
+	tr := &http.Transport{
+		Proxy:           http.ProxyURL(p),
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-
-	result := &Result{BeginAt: time.Now()}
-
-	resp, err := newClient(proxy).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	result.ConnectDuration = time.Since(result.BeginAt)
-
-	result.status = resp.StatusCode
-	result.header = resp.Header
-
-	flag := int64(0)
-
-	go func() {
-		for {
-			bs := make([]byte, 100*1000)
-			n, re := resp.Body.Read(bs)
-			if re != nil {
-				cancel()
-				return
-			}
-			atomic.AddInt64(&flag, int64(n))
-		}
-	}()
-
-	<-ctx.Done()
-
-	result.TotalDuration = time.Since(result.BeginAt)
-
-	result.Length = atomic.LoadInt64(&flag)
-
-	result.BS = float64(result.Length) / result.TotalDuration.Seconds()
-
-	return result, nil
-}
-
-func newClient(proxy string) *http.Client {
-	var proxyFunc func(*http.Request) (*url.URL, error)
-	if proxy != "" {
-		proxyFunc = func(req *http.Request) (*url.URL, error) {
-			return url.Parse(proxy)
-		}
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			Proxy:               proxyFunc,
-			DialContext:         (&net.Dialer{Timeout: time.Hour}).DialContext,
-			TLSHandshakeTimeout: 10 * time.Second,
-			IdleConnTimeout:     time.Minute,
-			ForceAttemptHTTP2:   true,
+	return &HTTPClient{
+		&http.Client{
+			Transport: tr,
+			Timeout:   time.Second * 15,
 		},
-		Timeout: time.Hour,
 	}
+}
+
+func (c *HTTPClient) Download(url string) (*Tracer, error) {
+	tracer := &Tracer{}
+	trace := &httptrace.ClientTrace{
+		GetConn:              tracer.GetConn,
+		GotConn:              tracer.GotConn,
+		GotFirstResponseByte: tracer.GotFirstResponseByte,
+	}
+
+	traceCtx := httptrace.WithClientTrace(context.Background(), trace)
+	req, err := http.NewRequestWithContext(traceCtx, http.MethodGet, url, nil)
+
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+	written, err := io.Copy(ioutil.Discard, resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	tracer.GotResponseBody(written)
+	return tracer, nil
+}
+
+func (c *HTTPClient) Upload(url string, size int64) (*Speed, error) {
+
+	buf := bytes.NewBuffer(make([]byte, size))
+	req, _ := http.NewRequest(http.MethodGet, url, buf)
+
+	beforeReq := time.Now()
+	res, err := c.Do(req)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+	_, err = io.Copy(ioutil.Discard, res.Body)
+
+	if err != nil {
+		return nil, err
+	}
+	duration := time.Since(beforeReq)
+
+	return &Speed{size, duration}, nil
+}
+
+type Cloudflare struct {
+	*HTTPClient
+	measureID int
+}
+
+func New(proxy string) *Cloudflare {
+	return &Cloudflare{
+		HTTPClient: NewHTTPClient(proxy),
+		measureID:  MeasureID(),
+	}
+}
+
+func (cf *Cloudflare) Download(size int64) (*Tracer, error) {
+	// url := fmt.Sprintf("https://speed.cloudflare.com/__down?measId=%dbytes=%d", cf.measureID, size)
+	url := fmt.Sprintf("https://speed.cloudflare.com/__down?bytes=%d", size)
+	tracer, err := cf.HTTPClient.Download(url)
+	if err != nil {
+		return tracer, err
+	}
+	tracer.written = size
+	return tracer, err
+}
+
+func (cf *Cloudflare) Upload(size int64) (*Speed, error) {
+	// url := fmt.Sprintf("https://speed.cloudflare.com/__up?measId=%d", cf.measureID)
+	url := "https://speed.cloudflare.com/__up"
+	return cf.HTTPClient.Upload(url, size)
+}
+
+type Meta struct {
+	Hostname       string `json:"hostname"`
+	ClientIP       string `json:"clientIp"`
+	HTTPProtocol   string `json:"httpProtocol"`
+	Asn            int    `json:"asn"`
+	AsOrganization string `json:"asOrganization"`
+	Colo           string `json:"colo"`
+	Country        string `json:"country"`
+	City           string `json:"city"`
+	Region         string `json:"region"`
+	PostalCode     string `json:"postalCode"`
+	Latitude       string `json:"latitude"`
+	Longitude      string `json:"longitude"`
+}
+
+func (m Meta) String() string {
+	return fmt.Sprintf("[%s, %s, %s]", m.ClientIP, m.AsOrganization, m.Colo)
+}
+
+func (c *Cloudflare) GetMeta() (*Meta, error) {
+	var MetaURL = "https://speed.cloudflare.com/meta"
+	req, _ := http.NewRequest(http.MethodGet, MetaURL, nil)
+
+	res, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	stream, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	var meta Meta
+	err = json.Unmarshal(stream, &meta)
+	if err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+func MeasureID() int {
+	rand.Seed(time.Now().UnixNano())
+	return rand.Intn(9000_0000_0000_0000) + 1000_0000_0000_0000
 }

@@ -16,12 +16,7 @@ func TestGetMeta(t *testing.T) {
 }
 
 func TestUpload(t *testing.T) {
-	client := NewHTTPClient("http://localhost:7890")
-	clash.SetMode(clash.GlobalMode)
-	defer clash.SetMode(clash.RuleMode)
 
-	speed, err := client.Upload("https://speed.cloudflare.com/__up", 100*1000)
-	t.Log(speed, err)
 }
 
 func TestDownload(t *testing.T) {

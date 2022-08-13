@@ -2,6 +2,7 @@ package cloudflare
 
 import (
 	"fmt"
+	"math"
 	"net/http/httptrace"
 	"time"
 )
@@ -9,8 +10,29 @@ import (
 type Latency time.Duration
 
 func (l Latency) String() string {
+	return fmt.Sprintf("%dms", l.Cell())
+}
+
+func (l Latency) Cell() int64 {
 	r := l / Latency(time.Millisecond)
-	return fmt.Sprintf("%dms", r)
+	return int64(r)
+}
+
+type LatencySlice []Latency
+
+func (list LatencySlice) Avg() Latency {
+	length := len(list)
+	sum := Latency(0)
+
+	if length < 1 {
+		return sum
+	}
+
+	for _, val := range list {
+		sum += val
+	}
+
+	return sum / Latency(length)
 }
 
 type Speed struct {
@@ -19,15 +41,45 @@ type Speed struct {
 }
 
 func (s Speed) Value() float64 {
+	if s.duration == 0 {
+		return 0
+	}
 	MB := float64(s.size) / (1024 * 1024)
 	sec := float64(s.duration) / float64(time.Second)
-	return MB / sec
+	r := MB / sec
+	return math.Round(r*100) / 100
 }
-
+func (s Speed) Cell() float64 {
+	return s.Value()
+}
 func (s Speed) String() string {
 	return fmt.Sprintf("%.2fMB/s", s.Value())
 }
 
+type SpeedSlice []Speed
+
+func (list SpeedSlice) Avg() Speed {
+	length := len(list)
+
+	sum := Speed{}
+
+	if length < 1 {
+		return sum
+	}
+	var totalWritten int64
+	var totalDuration time.Duration
+	for _, val := range list {
+		totalWritten += val.size
+		totalDuration += val.duration
+	}
+
+	return Speed{
+		size:     totalWritten,
+		duration: totalDuration,
+	}
+}
+
+// Deprecated TODO remove
 func (a Speed) Add(b Speed) Speed {
 	return Speed{
 		size:     a.size + b.size,
@@ -35,7 +87,7 @@ func (a Speed) Add(b Speed) Speed {
 	}
 }
 
-// NaS stand for Not a Speed.
+// Deprecated TODO remove
 func NaS() Speed {
 	return Speed{
 		size:     0,
@@ -83,6 +135,7 @@ func (t *Tracer) Speed() Speed {
 
 type TracerList []*Tracer
 
+// TODO: remove
 func (r TracerList) AvgLatency() Latency {
 	var l Latency
 	for _, val := range r {
@@ -94,6 +147,7 @@ func (r TracerList) AvgLatency() Latency {
 	return l / Latency(len(r))
 }
 
+// TODO remove
 func (r TracerList) AvgSpeed() Speed {
 	var totalWritten int64
 	var totalDuration time.Duration
@@ -109,15 +163,17 @@ func (r TracerList) AvgSpeed() Speed {
 }
 
 type Record struct {
-	Latency Latency
-	Up100KB Speed
-	Dn100KB Speed
-	Dn25MB  Speed
+	NodeName string
+	Latency  LatencySlice
+	Up100KB  SpeedSlice
+	Dn100KB  SpeedSlice
+	Dn10MB   SpeedSlice
 }
 
 func (r Record) String() string {
-	return "Latency " + r.Latency.String() +
-		", Dn100KB " + r.Dn100KB.String() +
-		", Dn25MB " + r.Dn25MB.String() +
-		", Up100KB " + r.Up100KB.String()
+	return r.NodeName + " { " +
+		"Latency " + r.Latency.Avg().String() +
+		", Dn100KB " + r.Dn100KB.Avg().String() +
+		", Dn10MB " + r.Dn10MB.Avg().String() +
+		", Up100KB " + r.Up100KB.Avg().String() + " }"
 }

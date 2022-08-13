@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/http/httptrace"
@@ -28,12 +27,12 @@ func NewHTTPClient(proxy string) *HTTPClient {
 	return &HTTPClient{
 		&http.Client{
 			Transport: tr,
-			Timeout:   time.Second * 15,
+			Timeout:   time.Second * 20,
 		},
 	}
 }
 
-func (c *HTTPClient) Download(url string) (*Tracer, error) {
+func (c *HTTPClient) Download(ctx context.Context, url string) (*Tracer, error) {
 	tracer := &Tracer{}
 	trace := &httptrace.ClientTrace{
 		GetConn:              tracer.GetConn,
@@ -41,7 +40,7 @@ func (c *HTTPClient) Download(url string) (*Tracer, error) {
 		GotFirstResponseByte: tracer.GotFirstResponseByte,
 	}
 
-	traceCtx := httptrace.WithClientTrace(context.Background(), trace)
+	traceCtx := httptrace.WithClientTrace(ctx, trace)
 	req, err := http.NewRequestWithContext(traceCtx, http.MethodGet, url, nil)
 
 	if err != nil {
@@ -54,7 +53,7 @@ func (c *HTTPClient) Download(url string) (*Tracer, error) {
 	}
 
 	defer resp.Body.Close()
-	written, err := io.Copy(ioutil.Discard, resp.Body)
+	written, err := io.Copy(io.Discard, resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -62,10 +61,10 @@ func (c *HTTPClient) Download(url string) (*Tracer, error) {
 	return tracer, nil
 }
 
-func (c *HTTPClient) Upload(url string, size int64) (*Speed, error) {
+func (c *HTTPClient) Upload(ctx context.Context, url string, size int64) (*Speed, error) {
 
 	buf := bytes.NewBuffer(make([]byte, size))
-	req, _ := http.NewRequest(http.MethodGet, url, buf)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, buf)
 
 	beforeReq := time.Now()
 	res, err := c.Do(req)
@@ -75,7 +74,7 @@ func (c *HTTPClient) Upload(url string, size int64) (*Speed, error) {
 	}
 
 	defer res.Body.Close()
-	_, err = io.Copy(ioutil.Discard, res.Body)
+	_, err = io.Copy(io.Discard, res.Body)
 
 	if err != nil {
 		return nil, err
@@ -97,10 +96,10 @@ func New(proxy string) *Cloudflare {
 	}
 }
 
-func (cf *Cloudflare) Download(size int64) (*Tracer, error) {
+func (cf *Cloudflare) Download(ctx context.Context, size int64) (*Tracer, error) {
 	// url := fmt.Sprintf("https://speed.cloudflare.com/__down?measId=%dbytes=%d", cf.measureID, size)
 	url := fmt.Sprintf("https://speed.cloudflare.com/__down?bytes=%d", size)
-	tracer, err := cf.HTTPClient.Download(url)
+	tracer, err := cf.HTTPClient.Download(ctx, url)
 	if err != nil {
 		return tracer, err
 	}
@@ -108,10 +107,10 @@ func (cf *Cloudflare) Download(size int64) (*Tracer, error) {
 	return tracer, err
 }
 
-func (cf *Cloudflare) Upload(size int64) (*Speed, error) {
+func (cf *Cloudflare) Upload(ctx context.Context, size int64) (*Speed, error) {
 	// url := fmt.Sprintf("https://speed.cloudflare.com/__up?measId=%d", cf.measureID)
 	url := "https://speed.cloudflare.com/__up"
-	return cf.HTTPClient.Upload(url, size)
+	return cf.HTTPClient.Upload(ctx, url, size)
 }
 
 type Meta struct {
@@ -142,7 +141,7 @@ func (c *Cloudflare) GetMeta() (*Meta, error) {
 		return nil, err
 	}
 	defer res.Body.Close()
-	stream, err := ioutil.ReadAll(res.Body)
+	stream, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}

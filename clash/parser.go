@@ -44,7 +44,13 @@ func ReadConfig() Config {
 	config, err := ioutil.ReadFile(path)
 
 	if err != nil {
-		log.Fatal(err)
+		path = filepath.Join(dir, "scoop", "apps", "clash-verge", "current", ".config",
+			"clash-verge", "config.yaml")
+		config, err = ioutil.ReadFile(path)
+
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	err = yaml.Unmarshal(config, &rawYaml)

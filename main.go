@@ -18,7 +18,7 @@ var chanErr = make(chan error, 32)
 var chanStatus = make(chan string)
 
 func main() {
-	fmt.Println("Clash Tester(rev2) is running.")
+	fmt.Println("Clash Tester(rev3) is running.")
 	go ErrHandler(chanErr, true)
 	go RecordHandler(chanRecord, chanStatus)
 
